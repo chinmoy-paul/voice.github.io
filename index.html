@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Public Room Voice Call</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex items-center justify-center p-4">
+
+    <div class="max-w-md w-full bg-slate-800 rounded-3xl p-8 shadow-2xl border border-slate-700">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold mb-2 text-blue-400">Public Voice</h1>
+            <p class="text-slate-400 text-sm">Join a room to talk to anyone</p>
+        </div>
+
+        <!-- Room Input Section -->
+        <div class="space-y-4">
+            <div id="setup-section">
+                <label class="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-2">Room Name</label>
+                <input type="text" id="room-input" placeholder="e.g. funny-cats-123" 
+                    class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition mb-4">
+                
+                <button id="btn-join" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition">
+                    Enter Room
+                </button>
+            </div>
+
+            <!-- Active Call UI (Hidden initially) -->
+            <div id="call-section" class="hidden space-y-6">
+                <div class="bg-slate-900/50 p-6 rounded-2xl border border-slate-700 text-center">
+                    <p class="text-slate-400 text-xs uppercase mb-2">Current Room</p>
+                    <h2 id="display-room" class="text-2xl font-mono font-bold text-blue-400">---</h2>
+                </div>
+
+                <div class="flex flex-col gap-3">
+                    <div id="searching-ui" class="text-center p-4">
+                        <div class="inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                        <p class="text-sm text-slate-400">Waiting for someone else to join...</p>
+                    </div>
+                    
+                    <button id="btn-leave" class="w-full bg-red-600 hover:bg-red-500 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition">
+                        Leave Room
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="mt-8 flex items-center justify-center gap-2">
+            <div id="status-dot" class="w-2 h-2 rounded-full bg-slate-600"></div>
+            <span id="status-text" class="text-xs text-slate-500 uppercase tracking-widest font-bold">Mic Access Required</span>
+        </div>
+    </div>
+
+    <audio id="remote-audio" autoplay></audio>
+
+    <script>
+        const roomInput = document.getElementById('room-input');
+        const btnJoin = document.getElementById('btn-join');
+        const btnLeave = document.getElementById('btn-leave');
+        const setupSection = document.getElementById('setup-section');
+        const callSection = document.getElementById('call-section');
+        const displayRoom = document.getElementById('display-room');
+        const statusText = document.getElementById('status-text');
+        const statusDot = document.getElementById('status-dot');
+        const searchingUi = document.getElementById('searching-ui');
+        const remoteAudio = document.getElementById('remote-audio');
+
+        let peer = null;
+        let localStream = null;
+        let activeCall = null;
+
+        // Get microphone on load
+        async function getMic() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                updateStatus('Mic Ready', 'bg-blue-500');
+            } catch (err) {
+                updateStatus('Mic Denied', 'bg-red-500');
+                alert("Please enable microphone to use this app.");
+            }
+        }
+
+        function updateStatus(text, colorClass) {
+            statusText.innerText = text;
+            statusDot.className = `w-2 h-2 rounded-full ${colorClass}`;
+            if (colorClass.includes('green')) statusDot.classList.add('pulse');
+        }
+
+        function joinRoom() {
+            const roomName = roomInput.value.trim().toLowerCase();
+            if (!roomName) return alert("Enter a room name!");
+            if (!localStream) return alert("Waiting for microphone...");
+
+            // Logic: 
+            // Person 1 joins room 'xyz' -> They become the 'host' of that room ID.
+            // Person 2 joins room 'xyz' -> They try to call 'xyz'.
+            
+            peer = new Peer(roomName); // Attempt to claim the room name as an ID
+
+            peer.on('open', (id) => {
+                displayRoom.innerText = id;
+                setupSection.classList.add('hidden');
+                callSection.classList.remove('hidden');
+                updateStatus('In Room: ' + id, 'bg-green-500');
+                
+                // Try to call the room in case someone is already there acting as host
+                // (This part is tricky with static P2P, so we assume the first one is the listener)
+            });
+
+            peer.on('call', (call) => {
+                call.answer(localStream);
+                handleStream(call);
+            });
+
+            peer.on('error', (err) => {
+                if (err.type === 'unavailable-id') {
+                    // Room is taken! That means someone is already in it.
+                    // We will create a random ID for ourselves and call the Room Name.
+                    connectAsGuest(roomName);
+                } else {
+                    console.error(err);
+                    alert("Connection error occurred.");
+                }
+            });
+        }
+
+        function connectAsGuest(roomName) {
+            // Room is occupied, so we call the room name
+            if (peer) peer.destroy();
+            
+            peer = new Peer(); // Random ID
+            peer.on('open', () => {
+                const call = peer.call(roomName, localStream);
+                handleStream(call);
+                
+                displayRoom.innerText = roomName;
+                setupSection.classList.add('hidden');
+                callSection.classList.remove('hidden');
+                updateStatus('Calling Room...', 'bg-green-500');
+            });
+        }
+
+        function handleStream(call) {
+            activeCall = call;
+            searchingUi.classList.add('hidden');
+            updateStatus('Connected', 'bg-green-400');
+
+            call.on('stream', (stream) => {
+                remoteAudio.srcObject = stream;
+            });
+
+            call.on('close', leaveRoom);
+        }
+
+        function leaveRoom() {
+            if (activeCall) activeCall.close();
+            if (peer) peer.destroy();
+            
+            remoteAudio.srcObject = null;
+            setupSection.classList.remove('hidden');
+            callSection.classList.add('hidden');
+            searchingUi.classList.remove('hidden');
+            updateStatus('Mic Ready', 'bg-blue-500');
+        }
+
+        btnJoin.addEventListener('click', joinRoom);
+        btnLeave.addEventListener('click', leaveRoom);
+
+        window.onload = getMic;
+    </script>
+</body>
+</html>
